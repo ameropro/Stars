@@ -64,39 +64,62 @@ async def need_op(user_id: int, bot: Bot) -> bool:
     channels = get_all_op_channels()
 
     for op_id, link, channel_id in channels:
-        if has_user_checked(user_id, op_id):
-            continue
-
         if not channel_id:
             channel_id = await get_channel_id(bot, link)
             if not channel_id:
+                # если не удалось получить id канала — считаем, что ОП не пройдён
                 return True
             update_op_channel_id(op_id, channel_id)
 
         try:
             member = await bot.get_chat_member(channel_id, user_id)
             if member.status in ("left", "kicked"):
-                return True
-        except:
-            return True
+                return True  # не подписан -> ОП нужен
+        except Exception:
+            return True  # ошибка проверки -> подстраховка, требуем ОП
 
-    return False
+    return False  # по всем каналам подписан
 
-async def show_op(user_id: int, bot: Bot):
+
+async def show_native_op(user_id: int, bot: Bot):
     builder = InlineKeyboardBuilder()
-
-    for op_id, link, _ in get_all_op_channels():
+    
+    # Собираем спонсоров
+    channels = get_all_op_channels()
+    count = 0
+    for op_id, link, _ in channels:
         if not has_user_checked(user_id, op_id):
-            builder.button(text="📢 Подписаться", url=link)
+            count += 1
+            builder.button(text=f"Спонсор №{count}", url=link)
 
+    # Кнопка проверки
     builder.button(text="✅ Я подписался", callback_data="subbed_op_notchek")
     builder.adjust(1)
 
-    await bot.send_message(
-        user_id,
-        "🔒 Для доступа подпишитесь на каналы:",
-        reply_markup=builder.as_markup()
-    )
+    # Отправляем с картинкой
+    try:
+        photo = FSInputFile("check_subs.jpg")
+        await bot.send_photo(
+            chat_id=user_id,
+            photo=photo,
+            caption=(
+                "<b>Для продолжения использования бота подпишись на следующие каналы наших спонсоров</b>\n\n"
+                "<b>1. https://t.me/amerostars \n\n2. https://t.me/amerostars_chat</b>\n\n"
+                "<blockquote><b>💜 Спасибо за то что вы выбрали НАС</b></blockquote>"
+            ),
+            parse_mode="HTML",
+            reply_markup=builder.as_markup()
+        )
+    except Exception as e:
+        # Резерв на случай если картинки нет или ошибка
+        logging.error(f"Ошибка отправки фото ОП: {e}")
+        await bot.send_message(
+            user_id,
+            "<b>Для продолжения подпишитесь на каналы:</b>",
+            parse_mode="HTML",
+            reply_markup=builder.as_markup()
+        )
+
 
 main_menu_kb = ReplyKeyboardMarkup(
     keyboard=[
@@ -247,6 +270,31 @@ class AntiFloodMiddleware(BaseMiddleware):
             self.last_time[user_id] = current_time
             return await handler(event, data)
 
+class OPMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[types.Message | types.CallbackQuery, Dict[str, Any]], Awaitable[Any]],
+        event: types.Message | types.CallbackQuery,
+        data: Dict[str, Any]
+    ) -> Any:
+        bot: Bot = data["bot"]
+
+        # Разрешаем /start, чтобы пользователь смог зайти и пройти ОП
+        if isinstance(event, types.Message) and event.text and event.text.startswith("/start"):
+            return await handler(event, data)
+
+        user_id = event.from_user.id
+
+        # Если ещё не прошёл ОП — показываем и блокируем дальнейшую обработку
+        if await need_op(user_id, bot):
+            await show_native_op(user_id, bot)
+            if isinstance(event, types.CallbackQuery):
+                await event.answer("Сначала подпишитесь на каналы ОП", show_alert=True)
+            return
+
+        return await handler(event, data)
+
+
 class ConfigStates(StatesGroup):
     waiting_for_referrals = State()
     waiting_for_tasks = State()
@@ -345,6 +393,27 @@ async def show_gender(chat_id, bot: Bot, ref_id=None):
         reply_markup=markup, 
         parse_mode='HTML'
     )
+
+@router.message(Command("adminpanel"))
+async def adminpanel_command(message: Message, bot):
+    # только для админов
+    if message.from_user.id not in admins_id:
+        await message.answer(
+            "<b>⛔️ У вас нет доступа к панели администратора</b>",
+            parse_mode="HTML"
+        )
+        return
+
+    # эмулируем нажатие inline-кнопки
+    call_like = types.CallbackQuery(
+        id="adminpanel_fake",
+        from_user=message.from_user,
+        chat_instance="",
+        data="adminpanelka",
+        message=message
+    )
+
+    await adminpanelka_callback(call_like, bot)
 
 @router.callback_query(F.data == "check_op")
 async def check_op_callback(call: CallbackQuery, bot: Bot):
@@ -506,7 +575,7 @@ async def show_op(chat_id,links, bot: Bot, ref_id=None):
         item1 = types.InlineKeyboardButton(text='✅ Я подписан',callback_data='subgram-op')
     markup.row(item1)
     photo = FSInputFile("check_subs.jpg")
-    await bot.send_photo(chat_id, photo, caption="<b>Для продолжения использования бота подпишись на следующие каналы наших спонсоров</b>\n\n<blockquote><b>💜Спасибо за то что вы выбрали НАС</b></blockquote>", parse_mode='HTML', reply_markup=markup.as_markup())
+    await bot.send_photo(chat_id, photo, caption="<b>Для продолжения использования бота подпишись на следующие каналы наших спонсоров</b>\n\n<b>1. https://t.me/amerostars \n\n2. https://t.me/amerostars_chat</b>\n\n<blockquote><b>💜Спасибо за то что вы выбрали НАС</b></blockquote>", parse_mode='HTML', reply_markup=markup.as_markup())
 
 
 def get_random_value():
@@ -606,9 +675,10 @@ async def start_command(message: Message, bot: Bot, state: FSMContext):
         user_id = user.id
         username = user.username
         args = message.text.split()
-        
-        if await need_op(message.from_user.id,  bot):
-            await show_op(message.from_user.id, bot)
+
+        # Проверка ОП
+        if await need_op(message.from_user.id, bot):
+            await show_native_op(message.from_user.id, bot)
             return
 
         # Проверяем бан
@@ -636,80 +706,28 @@ async def start_command(message: Message, bot: Bot, state: FSMContext):
             ('📘 Гайды | FAQ', 'faq'),
             ('🏆 Топ', 'leaders')
         ]
-        
-        # Добавляем кнопки
+
         for text, callback_data in buttons:
             builder_start.button(text=text, callback_data=callback_data)
-            
-        # Добавляем beta кнопку если есть
+
         if beta_url and beta_name:
             builder_start.button(text=beta_name, url=beta_url)
-            
-        # Настраиваем расположение кнопок
+
         builder_start.adjust(1, 1, 2, 2, 1, 1)
         markup_start = builder_start.as_markup()
 
-        # Обрабатываем referral_id
+        # Обрабатываем referral_id из /start
         referral_id = None
         if len(args) > 1:
             referral_id = int(args[1]) if args[1].isdigit() else args[1]
 
-        # Проверяем подписку на каналы
-        if message.chat.id != id_chat and message.chat.id not in admins_id:
-            # Запрос на проверку подписки
-            response = await request_op(
-                user_id=user_id,
-                chat_id=user.id,
-                first_name=user.first_name,
-                language_code=user.language_code,
-                bot=bot,
-                ref_id=None,
-                is_premium=getattr(user, 'is_premium', False)
-            )
-
-            if response != 'ok':
-                return
-
-            # Проверяем спонсоров
-            sponsor_buttons = []
-            for sponsor_id in get_all_id_opnotcheck():
-                sponsor_id = int(sponsor_id[0])
-                link = get_link_by_id(sponsor_id)
-                
-                if link and not has_user_checked(user_id, sponsor_id):
-                    sponsor_buttons.append(
-                        types.InlineKeyboardButton(
-                            text=f'Спонсор №{len(sponsor_buttons) + 1}',
-                            url=link
-                        )
-                    )
-
-            if sponsor_buttons:
-                markup = InlineKeyboardBuilder()
-                for button in sponsor_buttons:
-                    markup.row(button)
-                    
-                call_data = f'subbed_op_notchek{":" + str(referral_id) if referral_id else ""}'
-                markup.row(types.InlineKeyboardButton(
-                    text='✅ Я подписан',
-                    callback_data=call_data
-                ))
- 
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=FSInputFile('check_subs.jpg'),
-                    caption="<b>Для продолжения использования бота подпишись на следующие каналы наших спонсоров: </b>",
-                    parse_mode='HTML',
-                    reply_markup=markup.as_markup()
-                )
-                return
-
-        # Регистрация нового пользователя
+        # Регистрация НОВОГО пользователя
         if not user_exists(user_id):
-            if referral_id and user_exists(referral_id):
+            if referral_id:
                 # Генерация капчи для реферальной системы
                 capthca_question, captcha_answer = generate_captcha()
-                await state.update_data(captcha_answer=captcha_answer)
+                # сохраняем и ответ капчи, и referral_id в state
+                await state.update_data(captcha_answer=captcha_answer, referral_id=referral_id)
                 keyboard = create_captcha_keyboard(captcha_answer, referral_id)
                 await state.set_state(CaptchaState.waiting_for_answer)
                 await bot.send_message(
@@ -720,7 +738,7 @@ async def start_command(message: Message, bot: Bot, state: FSMContext):
                 )
                 return
             else:
-                # Обработка UTM-меток
+                # Новый пользователь без реферала (UTM при желании)
                 urls_utm = get_urls_utm()
                 for url in urls_utm:
                     parts = url.split('=')
@@ -728,7 +746,10 @@ async def start_command(message: Message, bot: Bot, state: FSMContext):
                         users_add_utm(url)
                         referral_id = None
                         break
-                add_user(user_id, username, referral_id)
+                add_user(user_id, username, None)
+
+        # Уже существующий пользователь: referral_id НЕ меняем,
+        # чтобы не перезаписывать рефовода.
 
         # Обновление username если изменился
         cur_username = get_username(user_id)
@@ -754,13 +775,14 @@ async def start_command(message: Message, bot: Bot, state: FSMContext):
             parse_mode='HTML',
             reply_markup=main_menu_kb
         )
-        
+
     except Exception as e:
         logging.error(f"Ошибка в start_command: {e}")
         await message.reply(
             "Произошла ошибка при запуске бота. Пожалуйста, попробуйте позже.",
             parse_mode='HTML'
         )
+
 
 @router.callback_query(F.data == "check_op")
 async def check_op_callback(call: CallbackQuery, bot: Bot):
@@ -791,6 +813,18 @@ async def subbed_op_notchek_callback(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
     channels = get_all_op_channels()
 
+    # 1. Если уже всё пройдено
+    if get_op_done(user_id) == 1:
+        await callback.answer("✅ Подписки уже подтверждены", show_alert=True)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await send_main_menu(user_id, bot)
+        return
+
+    # 2. Проверяем каждый канал
+    not_subscribed = False
     for op_id, link, channel_id in channels:
         if has_user_checked(user_id, op_id):
             continue
@@ -798,49 +832,84 @@ async def subbed_op_notchek_callback(callback: CallbackQuery, bot: Bot):
         if not channel_id:
             channel_id = await get_channel_id(bot, link)
             if not channel_id:
-                await callback.answer(
-                    "❌ Бот не добавлен в канал",
-                    show_alert=True
-                )
-                return
+                # Если бот не админ/не может найти канал - пропускаем или ругаемся
+                # Лучше пока пропустить, чтобы не блочить юзера, если канал сдох
+                continue 
             update_op_channel_id(op_id, channel_id)
 
         try:
             member = await bot.get_chat_member(channel_id, user_id)
             if member.status in ("left", "kicked"):
-                await callback.answer(
-                    "❌ Вы не подписались на все каналы",
-                    show_alert=True
-                )
-                return
-        except:
-            await callback.answer(
-                "❌ Ошибка проверки подписки",
-                show_alert=True
-            )
-            return
+                not_subscribed = True
+                break # Хватит проверять, уже нашли косяк
+        except Exception as e:
+            logging.error(f"Ошибка проверки подписки {channel_id}: {e}")
+            # Если ошибка API (бот не админ и т.д.), лучше считать что подписан, или просить проверить вручную
+            # В строгой логике - считаем что не подписан
+            not_subscribed = True
+            break
 
+        # Если тут - значит подписан, помечаем
         mark_user_checked(user_id, op_id)
 
-    # ✅ РЕФЕРАЛЬНАЯ НАГРАДА (ОДИН РАЗ)
-    ref_id = get_referral_id(user_id)  # ты её УЖЕ сохраняешь в users
+    if not_subscribed:
+        # Обязательно отвечаем, чтобы крутилка пропала!
+        await callback.answer("❌ Вы не подписались на все каналы!", show_alert=True)
+        # Можно обновить сообщение (перепоказать кнопки)
+        await show_native_op(user_id, bot)
+        # Удалим старое сообщение, чтобы не дублировалось
+        try:
+            await callback.message.delete() 
+        except: 
+            pass
+        return
+
+    # 3. Если всё ок - ставим флаг
+    set_op_done(user_id, 1)
+
+    # 4. Выдаём награду рефереру
+    ref_id = get_referral_id(user_id)
     if ref_id and user_exists(ref_id):
-        increment_stars(ref_id, nac_1[0])
-        increment_refs(ref_id)
+        c_refs = get_user_referrals_count(ref_id)
+        increment_referrals(ref_id)
 
-    await callback.answer("✅ Подписки подтверждены", show_alert=True)
+        if c_refs < 50:
+            reward = nac_1[0] * 2 if user_in_booster(ref_id) else nac_1[0]
+        elif 50 <= c_refs < 250:
+            reward = nac_2[0] * 2 if user_in_booster(ref_id) else nac_2[0]
+        else:
+            reward = nac_3[0] * 2 if user_in_booster(ref_id) else nac_3[0]
 
+        increment_stars(ref_id, reward)
+
+        try:
+            new_ref_link = f"https://t.me/{(await bot.me()).username}?start={ref_id}"
+            await bot.send_message(
+                ref_id,
+                (
+                    f"🎉 Пользователь <code>{user_id}</code> полностью прошёл ОП!\n"
+                    f"Вы получили +{reward}⭐️ за реферала.\n\n"
+                    f"Поделитесь ссылкой ещё раз:\n<code>{new_ref_link}</code>"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    # 5. Финал - пускаем в меню
+    await callback.answer("✅ Подписки подтверждены!", show_alert=True)
     try:
         await callback.message.delete()
-    except:
+    except Exception:
         pass
-
     await send_main_menu(user_id, bot)
+
 
 @router.callback_query(CaptchaState.waiting_for_answer)
 async def process_captcha(callback_query: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = callback_query.from_user.id
     username = callback_query.from_user.username if callback_query.from_user.username else None
+
     try:
         if not callback_query.data.startswith("captcha_"):
             await bot.answer_callback_query(callback_query.id, "❌ Неизвестный формат данных.")
@@ -852,117 +921,40 @@ async def process_captcha(callback_query: CallbackQuery, state: FSMContext, bot:
             return
 
         user_answer = int(parts[1])
-        referal = int(parts[2])
 
+        # Достаём и ответ капчи, и referral_id из state
         data = await state.get_data()
         captcha_answer = data.get('captcha_answer')
+        referral_id = data.get('referral_id')  # может быть None
+
         if captcha_answer is None:
             await bot.answer_callback_query(callback_query.id, "❌ Ошибка проверки, попробуйте заново.")
             return
 
         if user_answer == captcha_answer:
-            add_user(user_id, username, referal)
+            # регистрируем пользователя один раз с закреплённым referral_id
+            if not user_exists(user_id):
+                add_user(user_id, username, referral_id)
+
             await bot.answer_callback_query(callback_query.id, "✅ Вы ответили верно!")
-            c_refs = get_user_referrals_count(referal)
-            increment_referrals(referal)
-            if c_refs < 50:
-                nac = nac_1[0] * 2 if user_in_booster(referal) else nac_1[0]
-                increment_stars(referal, nac)
-            elif 50 <= c_refs < 250:
-                nac = nac_2[0] * 2 if user_in_booster(referal) else nac_2[0]
-                increment_stars(referal, nac)
-            else:
-                nac = nac_3[0] * 2 if user_in_booster(referal) else nac_3[0]
-                increment_stars(referal, nac)
+            try:
+                await bot.delete_message(user_id, callback_query.message.message_id)
+            except Exception:
+                pass
 
-            new_ref_link = f"https://t.me/{(await bot.me()).username}?start={referal}"
-            await bot.send_message(
-                referal,
-                f"🎉 Пользователь <code>{user_id}</code> запустил бота по вашей ссылке!\n"
-                f"Вы получили +{nac}⭐️ за реферала.\n"
-                f"Поделитесь ссылкой ещё раз:\n<code>{new_ref_link}</code>",
-                parse_mode='HTML'
-            )
-
-            await bot.delete_message(user_id, callback_query.message.message_id)
             await send_main_menu(user_id, bot)
             await state.clear()
         else:
-            await bot.answer_callback_query(callback_query.id, "❌ Вы ответили неверно! Попробуйте ещё раз", show_alert=True)
+            await bot.answer_callback_query(
+                callback_query.id,
+                "❌ Вы ответили неверно! Попробуйте ещё раз",
+                show_alert=True
+            )
+
     except Exception as e:
         print(f"Ошибка в process_captcha: {e}")
         await bot.answer_callback_query(callback_query.id, "❌ Произошла ошибка. Попробуйте ещё раз.")
 
-@router.message(F.text == '/adminpanel')
-async def adminpanel_command(message: Message, bot: Bot):
-    if message.from_user.id in admins_id:
-        builder_admin = InlineKeyboardBuilder()
-
-        builder_admin.button(text="⚙️ Изменить конфиг", callback_data='change_config')
-
-        builder_admin.button(text="ℹ️ Создать оп без проверки", callback_data="create_op_not_checked")
-        builder_admin.button(text="📄 Все ОП без проверки", callback_data="all_link_op")
-        builder_admin.button(text="ℹ️ Удалить оп без проверки", callback_data="delete_op_not_checked")
-
-        builder_admin.button(text='🗄️ Дамп базы', callback_data='dump')
-        builder_admin.button(text='🔗 UTM-Ссылки', callback_data='utm')
-        builder_admin.button(text='🎰 Лотерея', callback_data='admin_lotery')
-        
-        builder_admin.button(text='📊 Статистика', callback_data='stats')
-        builder_admin.button(text='👤 Информация о пользователе', callback_data='users_check')
-
-        builder_admin.button(text='✨ Выдать звёзды', callback_data='add_stars')
-        builder_admin.button(text='💫 Снять звёзды', callback_data='remove_stars')
-
-        builder_admin.button(text='📤 Рассылка', callback_data='mailing')
-
-        builder_admin.button(text='🎁 Добавить промокод', callback_data='add_promo_code')
-        builder_admin.button(text='📋 Список промокодов', callback_data='info_promo_codes')
-        builder_admin.button(text='❌ Удалить промокод', callback_data='remove_promo_code')
-
-        builder_admin.button(text='➕📢 Добавить канал', callback_data='add_channel')
-        builder_admin.button(text='📋 Список каналов', callback_data='info_added_channels')
-        builder_admin.button(text='➖📢 Удалить канал', callback_data='remove_channel')
-
-        builder_admin.button(text='🏆 Топ-50 Баланс', callback_data='top_balance')
-        builder_admin.button(text='🚀 Выдать буст', callback_data='give_boost')
-
-        markup_admin = builder_admin.adjust(1, 3, 3, 2, 2, 1, 3, 3, 2).as_markup()
-        
-        try:
-            headers = {
-                'Content-Type': 'application/json',
-                'Auth': f'{SUBGRAM_TOKEN}',
-                'Accept': 'application/json'
-            }
-            user_count = get_user_count()
-            total_withdrawn = get_total_withdrawn()
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post('https://api.subgram.ru/get-balance/', headers=headers) as response:
-                        response_json = await response.json()
-                        balance = response_json.get('balance', 0)
-            except Exception as e:
-                logging.error(f"Ошибка при получении баланса: {e}")
-                balance = 0
-            
-            msg_text = (
-                "<b>🎉 Вы вошли в панель администратора</b>\n\n"
-                f"👥 Пользователей: {user_count}\n"
-                f"💸 Выплачено: {total_withdrawn} ⭐️\n"
-                f"💰 Баланс SubGram: {balance} ₽"
-            )
-            await bot.send_message(message.from_user.id, msg_text, parse_mode='HTML', reply_markup=markup_admin)
-        except Exception as e:
-            logging.error(f"Ошибка при получении статистики для админ-панели: {e}")
-            await bot.send_message(
-                message.from_user.id,
-                "<b>🎉 Вы вошли в панель администратора</b>\n\n⚠️ Ошибка при получении статистики.",
-                parse_mode='HTML',
-                reply_markup=markup_admin
-            )
-    else:
-        await bot.send_message(message.from_user.id, "<b>🚫 У вас нет доступа к панели администратора</b>", parse_mode='HTML')
 
 @router.callback_query(F.data == "create_op_not_checked")
 async def create_op_not_checked(call: CallbackQuery, bot: Bot, state: FSMContext):
@@ -4366,6 +4358,8 @@ async def main():
     dp = Dispatcher()
     dp.message.middleware(AntiFloodMiddleware(limit=1))
     dp.callback_query.middleware(AntiFloodMiddleware(limit=1))
+    dp.message.middleware(OPMiddleware())
+    dp.callback_query.middleware(OPMiddleware())
     dp.startup.register(on_startup)
     dp.include_router(router)
     scheduler = AsyncIOScheduler()
