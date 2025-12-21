@@ -7,9 +7,6 @@ import calendar
 
 DATABASE_NAME = 'database.db'
 
-conn = sqlite3.connect("database.db", check_same_thread=False)
-cursor = conn.cursor()
-
 def connect_db():
     conn = sqlite3.connect(DATABASE_NAME)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -94,21 +91,6 @@ def initialize_database():
     else:
         print('Выполнено подключение к таблице "promocode_uses".')
     
-    if cursor.execute(
-        'SELECT name FROM sqlite_master WHERE type="table" AND name="op_not_checker"'
-).fetchone() is None:
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS op_not_checker (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                link TEXT NOT NULL,
-                channel_id INTEGER NOT NULL
-            )
-        ''')
-
-        print('Таблица "op_not_checker" создана')
-    else:
-        print('Выполнено подключение к таблице "op_not_checker".')
-
     if cursor.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="new_tasks"').fetchone() is None:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS new_tasks (
@@ -315,6 +297,17 @@ def initialize_database():
         print('Таблица "flyer_task" создана')
     else:
         print('Выполнено подключение к таблице "flyer_task".')
+
+    if cursor.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="op_not_checker"').fetchone() is None:
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS op_not_checker (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    link TEXT NOT NULL
+            )
+        ''')
+        print('Таблица "op_not_checker" создана')
+    else:
+        print('Выполнено подключение к таблице "op_not_checker".')
     
     if cursor.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="checker_op"').fetchone() is None:
         cursor.execute("""
@@ -1357,30 +1350,6 @@ def get_weekly_referrals(user_id: int) -> int:
     
     return result[0] if result else 0
 
-def get_all_op_channels():
-    cursor.execute(
-        "SELECT id, link, channel_id FROM op_not_checker"
-    )
-    return cursor.fetchall()
-
-def migrate_op_not_checker():
-    try:
-        cursor.execute("SELECT channel_id FROM op_not_checker LIMIT 1")
-    except Exception:
-        try:
-            cursor.execute("ALTER TABLE op_not_checker ADD COLUMN channel_id INTEGER")
-            conn.commit()
-            print("✔️ channel_id добавлен в op_not_checker")
-        except Exception as e:
-            print("⚠️ Ошибка миграции op_not_checker:", e)
-
-def update_op_channel_id(row_id: int, channel_id: int):
-    cursor.execute(
-        "UPDATE op_not_checker SET channel_id=? WHERE id=?",
-        (channel_id, row_id)
-    )
-    conn.commit()
-
 def get_user_referral_rank_formatted(user_id: int, period: str) -> str:
     try:
         start_ts, end_ts = get_period_timestamps(period)
@@ -1417,15 +1386,3 @@ def get_user_referral_rank_formatted(user_id: int, period: str) -> str:
         return f"<b>🏅 Ты на {rank_value} месте</b> | <code>{user_referral_count}</code> рефералов."
     else:
         return f"<b>🚫 Ты не попал в топ!</b> | <code>{user_referral_count}</code> рефералов."
-
-def get_referral_id(user_id: int):
-    with sqlite3.connect(DATABASE_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT referral_id FROM users WHERE id = ?",
-            (user_id,)
-        )
-        row = cursor.fetchone()
-        return row[0] if row and row[0] else None
-
-    migrate_op_not_checker()
