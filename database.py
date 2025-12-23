@@ -60,6 +60,15 @@ def initialize_database():
         else:
             print(f"Ошибка при добавлении поля count_tasker: {e}")
 
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN op_done INTEGER DEFAULT 0")
+        print('Поле op_done добавлено в таблицу "users"')
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e):
+            print('Выполнено подключение к полю op_done в таблице "users".')
+        else:
+            print(f"Ошибка при добавлении поля op_done: {e}")
+
     if cursor.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="promocodes"').fetchone() is None:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS promocodes (
@@ -302,12 +311,23 @@ def initialize_database():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS op_not_checker (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    link TEXT NOT NULL
+                    link TEXT NOT NULL,
+                    channel_id INTEGER DEFAULT NULL
             )
         ''')
         print('Таблица "op_not_checker" создана')
     else:
         print('Выполнено подключение к таблице "op_not_checker".')
+
+    # Добавляем колонку channel_id если её нет
+    try:
+        cursor.execute("ALTER TABLE op_not_checker ADD COLUMN channel_id INTEGER DEFAULT NULL")
+        print('Поле channel_id добавлено в таблицу "op_not_checker"')
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e):
+            print('Выполнено подключение к полю channel_id в таблице "op_not_checker".')
+        else:
+            print(f"Ошибка при добавлении поля channel_id: {e}")
     
     if cursor.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="checker_op"').fetchone() is None:
         cursor.execute("""
@@ -387,6 +407,45 @@ def has_user_checked(user_id: int, op_id: int) -> bool:
         cursor = conn.cursor()
         cursor.execute("SELECT 1 FROM checker_op WHERE user_id = ? AND op_id = ?", (user_id, op_id))
         return cursor.fetchone() is not None
+
+def get_all_op_channels():
+    """Возвращает список всех ОП каналов (id, link, channel_id)"""
+    with sqlite3.connect(DATABASE_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, link, channel_id FROM op_not_checker")
+        return cursor.fetchall()
+
+def update_op_channel_id(op_id: int, channel_id: int) -> bool:
+    """Обновляет channel_id для ОП канала"""
+    with sqlite3.connect(DATABASE_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE op_not_checker SET channel_id = ? WHERE id = ?", (channel_id, op_id))
+        conn.commit()
+        return True
+
+def get_op_done(user_id: int) -> int:
+    """Возвращает статус прохождения ОП (0 или 1)"""
+    with sqlite3.connect(DATABASE_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT op_done FROM users WHERE id = ?", (user_id,))
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+def set_op_done(user_id: int, value: int) -> bool:
+    """Устанавливает статус прохождения ОП"""
+    with sqlite3.connect(DATABASE_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET op_done = ? WHERE id = ?", (value, user_id))
+        conn.commit()
+        return True
+
+def get_referral_id(user_id: int):
+    """Возвращает ID реферера для пользователя"""
+    with sqlite3.connect(DATABASE_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT referral_id FROM users WHERE id = ?", (user_id,))
+        result = cursor.fetchone()
+        return result[0] if result else None
 
 def is_flyer_task_completed(task_hash):
     with sqlite3.connect(DATABASE_NAME) as conn:
